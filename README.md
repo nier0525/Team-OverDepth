@@ -49,6 +49,91 @@ Soul Like 류의 게임 중 대표격인 블러드본, 다크소울과 같은 �
 ### 서버 라이브러리
 -----------------------------------------
   
+서버 라이브러리는 IOCP 를 기반으로 설계되었으며 DB 는 MYSQL 과 연동하고 있습니다.  
+  
+#### 1. 프로토콜
+  
+프로토콜은 바이트 연산을 이용하여 그 기능과 역할을 세분화하여 관리하기 용이하도록 구현하였고, 기본적으로 Main, Sub, Protocol 로 나누어 사용하고 있습니다.  
+  
+Main 의 역할은 그 기능의 큰 틀로 보통 클래스명을 사용하고 합니다. ( MonsterClass, PlayerClass . . . )  
+Sub 의 역할은 클래스 내에 어떤 멤버 함수를 사용할 것인가에 대한 기능으로 그 기준은 사용자의 재량에 따릅니다. ( Attack, Move 또는 몬스터 종류별 함수 등 . . . )  
+Protocol 의 역할은 어떤 기능을 사용할 것인지를 선택하는 기능으로 가장 핵심적인 역할을 담당하고 있습니다.
+  
+헤더 파일  
+```  
+#pragma once
+#include"Global.h"
+
+class CProtocol
+{
+private:
+    //1$3 = 일치
+    //2&6 = 일치
+    //2&7 = 일치 
+    //& 연산을 하기 때문에 1이 아닌것은 다 0으로 처리 하기 때문.
+    //1, 3, 7, f, 3f, 7f, ff
+    DECLARE_SINGLETONE(CProtocol);
+    CProtocol() = default;
+    ~CProtocol() = default;
+    enum class FULL_CODE :unsigned __int64
+    {
+        MAIN = 0xff00000000000000,
+        SUB =  0x00ff000000000000,
+        PROTOCOL = 0x0000ff0000000000
+    };
+public:
+    void ProtocolMaker(unsigned __int64& Full_Code, unsigned __int64 input);
+    bool ProtocolUnpacker(unsigned __int64 _full_code, unsigned __int64 main, unsigned __int64 sub, unsigned __int64 protocol);
+};
+```  
+  
+구현부
+  
+```  
+#include "CProtocol.h"
+IMPLEMENT_SINGLETON(CProtocol)
+
+void CProtocol::ProtocolMaker(unsigned __int64& Full_Code, unsigned __int64 input)
+{
+    Full_Code = Full_Code | input;
+}
+
+bool CProtocol::ProtocolUnpacker(unsigned __int64 _full_code, unsigned __int64 main, unsigned __int64 sub, unsigned __int64 protocol)
+{
+    unsigned __int64 temp = 0;
+    int variable_count = 0;//입력받은 매개변수 개수
+    if (main != NULL)
+    {
+        temp = _full_code & (unsigned __int64)FULL_CODE::MAIN;
+        variable_count++;
+    }
+    if (sub != NULL)
+    {
+        temp = _full_code & (unsigned __int64)FULL_CODE::SUB;
+        variable_count++;
+    }
+    if (protocol != NULL)
+    {
+        temp = _full_code & (unsigned __int64)FULL_CODE::PROTOCOL;
+        variable_count++;
+    }
+    if (variable_count == 2)
+    {
+        printf("입력 가능 매개변수의 수를 초과하셨습니다.");
+        return false;
+    }
+    if (temp == main|| temp == sub || temp == protocol)
+    {
+        return true;
+    }
+    else
+    {
+        return false;
+    }
+
+}
+```  
+  
 ### 플레이어 동기화
 -----------------------------------------
   
