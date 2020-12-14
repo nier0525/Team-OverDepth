@@ -56,10 +56,11 @@ Soul Like 류의 게임 중 대표격인 블러드본, 다크소울과 같은 �
 프로토콜은 바이트 연산을 이용하여 그 기능과 역할을 세분화하여 관리하기 용이하도록 구현하였고, 기본적으로 Main, Sub, Protocol 로 나누어 사용하고 있습니다.  
   
 Main 의 역할은 그 기능의 큰 틀로 보통 클래스명을 사용하고 합니다. ( MonsterClass, PlayerClass . . . )  
-Sub 의 역할은 클래스 내에 어떤 멤버 함수를 사용할 것인가에 대한 기능으로 그 기준은 사용자의 재량에 따릅니다. ( Attack, Move 또는 몬스터 종류별 함수 등 . . . )  
+Sub 의 역할은 클래스 내에 어떤 멤버 함수를 사용할 것인가에 대한 기능으로 그 기준은 사용자의 재량에 따릅니다.  
+( Attack, Move 또는 몬스터 종류별 함수 등 . . . )  
 Protocol 의 역할은 어떤 기능을 사용할 것인지를 선택하는 기능으로 가장 핵심적인 역할을 담당하고 있습니다.
   
-#### 헤더 파일  
+#### 헤더 
 ```  
 #pragma once
 #include"Global.h"
@@ -133,6 +134,167 @@ bool CProtocol::ProtocolUnpacker(unsigned __int64 _full_code, unsigned __int64 m
 
 }
 ```  
+  
+#### 2. MYSQL 연동
+  
+DB 는 MYSQL 을 사용하여 관리하도록 구현 하였고, 본 게임에서는 유저의 계정 정보 정도만 관리하고 있습니다.  
+구현된 기능은 저장하기, 불러오기, 데이터 입력, 쿼리 선택, 데이터베이스 선택 이 있으며, 이후에도 필요 시 추가 할 예정입니다.  
+  
+#### 헤더
+  
+```  
+#pragma once
+#include "Global.h"
+
+class CMySQLDBManager
+{
+private:
+	DECLARE_SINGLETONE(CMySQLDBManager)
+
+	CMySQLDBManager();
+	~CMySQLDBManager();
+private:
+	MYSQL* connection, conn;
+	MYSQL_RES* sql_result;
+	MYSQL_ROW sql_row;
+	int DB_Num;
+public:
+	void Begin();
+	void End();
+
+	bool UseUserDB();
+	bool UserTBL_QuerySelect();
+
+	bool UserTBL_Load(UserInfo*& user);
+	void UserTBL_Insert(UserInfo* user);
+
+	void UpdateSQLResult() { sql_result = mysql_store_result(connection); }
+	MYSQL_ROW UpdateSQLROW() 
+	{
+		sql_row = mysql_fetch_row(sql_result);
+		return sql_row;
+	}
+
+	void SetConnection(MYSQL* _con) { connection = _con; }
+	void SetConn(MYSQL _con) { conn = _con; }
+	void SetSQLResult(MYSQL_RES* _result) { sql_result = _result; }
+	void SetSQLROW(MYSQL_ROW _row) { sql_row = _row; }
+
+	MYSQL* GetConnection() { return connection; }
+	MYSQL GetConn() { return conn; }
+	MYSQL_RES* GetSQLResult() { return sql_result; }
+	MYSQL_ROW GetSQLRow() { return sql_row; }
+	char* GetSQLRow(int i) { return sql_row[i]; }
+};
+```  
+  
+#### 구현부
+  
+```  
+#include "MySQLDataBaseManager.h"
+IMPLEMENT_SINGLETON(CMySQLDBManager)
+
+CMySQLDBManager::CMySQLDBManager()
+{
+	connection = nullptr;
+	ZeroMemory(&conn, sizeof(conn));
+	sql_result = nullptr;
+	sql_row = nullptr;
+	DB_Num = 0;
+}
+
+CMySQLDBManager::~CMySQLDBManager()
+{
+
+}
+
+void CMySQLDBManager::Begin()
+{
+	printf("MySQL Ver : %s\n", mysql_get_client_info());
+
+	// 초기화
+	mysql_init(&conn);
+
+	// DB 연결
+	connection = mysql_real_connect(&conn, DB_HOST, DB_USER, DB_PASS, DB_NAME, 3306, (char*)NULL, 0);
+	if (connection == NULL)
+	{
+		fprintf(stderr, "Mysql connection error : %s\n", mysql_error(&conn));
+		exit(0);
+	}
+	else
+	{
+		printf("성공\n");
+	}
+}
+
+bool CMySQLDBManager::UseUserDB()
+{
+	const char* query = "use userdb;";	// From 다음 DB에 존재하는 테이블 명으로 수정하세요
+	int query_stat = mysql_query(connection, query);
+	if (query_stat != 0)
+	{
+		fprintf(stderr, "Mysql query error : %s", mysql_error(&conn));
+		return false;
+	}
+
+	mysql_set_character_set(connection, "euckr");
+	return true;
+}
+
+bool CMySQLDBManager::UserTBL_QuerySelect()
+{ 
+	int query_stat = mysql_query(connection, "select * from usertbl;");
+	if (query_stat != 0)
+	{
+		fprintf(stderr, "Mysql query error : %s", mysql_error(&conn));
+		return false;
+	}
+
+	UpdateSQLResult();
+	return true;
+}
+
+bool CMySQLDBManager::UserTBL_Load(UserInfo*& user)
+{
+	if (UpdateSQLROW() != NULL)
+	{
+		user = new UserInfo(sql_row[ID], sql_row[PW], sql_row[NAME], ++DB_Num);
+		return false;
+	}
+	return true;
+}
+
+void CMySQLDBManager::UserTBL_Insert(UserInfo* user)
+{
+	char query[MSGSIZE];
+
+	sprintf_s(query, "insert into usertbl values('%s', '%s', '%s');", user->id, user->pw, user->name);
+	
+	int query_stat = mysql_query(connection, query);
+	if (query_stat != 0)
+	{
+		fprintf(stderr, "Mysql query error : %s", mysql_error(&conn));
+		return;
+	}
+}
+
+void CMySQLDBManager::End()
+{
+	mysql_free_result(sql_result);
+	mysql_close(connection);
+}
+```  
+  
+#### 3. 
+  
+  
+  
+  
+  
+  
+  
+  
   
 ### 플레이어 동기화
 -----------------------------------------
