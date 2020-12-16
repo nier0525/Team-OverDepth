@@ -52,7 +52,7 @@ Soul Like 류의 게임 중 대표격인 블러드본, 다크소울과 같은 �
   
 서버 라이브러리는 IOCP 를 기반으로 설계되었으며 DB 는 MYSQL 과 연동하고 있습니다.  
   
-#### 1. 프로토콜
+#### 1. Protocol
 --------------------------------------------------------------  
   
 프로토콜은 바이트 연산을 이용하여 그 기능과 역할을 세분화하여 관리하기 용이하도록 구현하였고, 기본적으로 Main, Sub, Protocol 로 나누어 사용하고 있습니다.  
@@ -137,7 +137,7 @@ bool CProtocol::ProtocolUnpacker(unsigned __int64 _full_code, unsigned __int64 m
 }
 ```  
   
-#### 2. MYSQL 연동
+#### 2. MYSQL
 --------------------------------------------------------------  
   
 DB 는 MYSQL 을 사용하여 관리하도록 구현 하였고, 본 게임에서는 유저의 계정 정보 정도만 관리하고 있습니다.  
@@ -289,7 +289,7 @@ void CMySQLDBManager::End()
 }
 ```  
   
-#### 3. 크리티컬 섹션
+#### 3. CriticalSection_EX
 --------------------------------------------------------------  
   
 IOCP 가 기반이라 하더라도 다른 클라이언트가 사용 중인 데이터는 중첩으로 사용하게 하면 분명히 문제가 되기 때문에 크리티컬 섹션을 이용하여 이를 방지하였습니다.  
@@ -355,7 +355,7 @@ template <class T>
 CriticalSection_EX CMultiThreadSyns<T>::cs;
 ```  
   
-#### 4. Listen 소켓
+#### 4. Listen Socket
 --------------------------------------------------------------  
   
 Listen 소켓 클래스는 TCP 통신 준비와 Accept 기능을 담당하고 있습니다.  
@@ -453,7 +453,7 @@ void CListenSocket::Release()
 }
 ```  
   
-#### 5. TCP 소켓
+#### 5. TCP Socket
 --------------------------------------------------------------  
   
 TCP 소켓 클래스는 순수하게 송신과 수신 기능만을 담당하고 통신에 필요한 멤버 변수를 가지고 있습니다.  
@@ -633,7 +633,7 @@ void CTCPSocket::Release()
 }
 ```  
   
-#### 6. 패킹
+#### 6. Packing
 --------------------------------------------------------------  
   
 이 클래스는 앞서 만든 TCP 소켓 클래스를 상속 받고 있습니다.
@@ -1088,9 +1088,39 @@ void CClientSection::player_offline()
 }
 ```  
   
+#### State
+-------------------------------------------------------------------------
   
+기능을 세분화하여 관리를 더욱 쉽게 하기 위해 사용한 상태 패턴 입니다.
+상태 패턴은 자동차의 기어와 같이 사용자가 사용 할 기능만 사용 할 수 있게 해줍니다.
   
+#### 헤더  
   
+```  
+#pragma once
+#include "Global.h"
+class CClientSection;
+
+class CState
+{
+protected:
+
+public:
+	CState()
+	{
+
+	}
+
+	~CState()
+	{
+
+	}
+	virtual unsigned __int64 Get_Sub_State() = 0;
+	virtual void RecvProcess(CClientSection* ptr) = 0;
+	virtual void SendProcess(CClientSection* ptr) = 0;
+	// virtual void Disconnected(CClientSection* ptr) = 0;
+};
+```  
   
   
   
