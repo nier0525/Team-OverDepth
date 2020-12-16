@@ -39,6 +39,7 @@ Soul Like 류의 게임 중 대표격인 블러드본, 다크소울과 같은 �
   
 + 서버  
   + 서버 라이브러리  
+  + 클라이언트 라이브러리  
   + 플레이어 동기화  
   + 서버-클라이언트 보간  
 + 클라이언트  
@@ -354,7 +355,105 @@ template <class T>
 CriticalSection_EX CMultiThreadSyns<T>::cs;
 ```  
   
-#### 4. TCP 소켓
+#### 4. Listen 소켓
+--------------------------------------------------------------  
+  
+Listen 소켓 클래스는 TCP 통신 준비와 Accept 기능을 담당하고 있습니다.  
+  
+#### 헤더
+  
+```  
+#pragma once
+#include "Error.h"
+
+class CListenSocket
+{
+private:
+	SOCKET sock;
+public:
+	CListenSocket();
+	~CListenSocket();
+
+	void TCP_Setting(const char* _id, const short _port);
+	void Listen();
+	void Listen(const int _count);
+	SOCKET Accept();
+
+	SOCKET GetListenSocket() { return sock; }
+
+	void Release();
+};
+```  
+  
+#### 구현부
+  
+```  
+#include "ListenSocket.h"
+
+CListenSocket::CListenSocket()
+{
+	sock = NULL;
+}
+
+CListenSocket::~CListenSocket()
+{
+	Release();
+}
+
+void CListenSocket::TCP_Setting(const char* _id, const short _port)
+{
+	sock = socket(AF_INET, SOCK_STREAM, 0);
+	if (sock == INVALID_SOCKET) CError::GetInstance()->err_quit("socket");
+
+	SOCKADDR_IN addr;
+	ZeroMemory(&addr, sizeof(addr));
+	addr.sin_family = AF_INET;
+
+	if (_id == nullptr)
+	{
+		addr.sin_addr.s_addr = htonl(INADDR_ANY);
+	}
+	else
+	{
+		addr.sin_addr.s_addr = inet_addr(_id);
+	}
+
+	addr.sin_port = htons(_port);
+
+	int retval = bind(sock, (SOCKADDR*)&addr, sizeof(addr));
+	if (retval == SOCKET_ERROR) CError::GetInstance()->err_quit("bind");
+}
+
+void CListenSocket::Listen()
+{
+	int retval = listen(sock, SOMAXCONN);
+	if (retval == SOCKET_ERROR) CError::GetInstance()->err_quit("listen");
+}
+
+void CListenSocket::Listen(const int _count)
+{
+	int retval = listen(sock, _count);
+	if (retval == SOCKET_ERROR) CError::GetInstance()->err_quit("listen");
+}
+
+SOCKET CListenSocket::Accept()
+{
+	SOCKADDR_IN addr;
+	int addrlen = sizeof(addr);
+
+	SOCKET client_sock = accept(sock, (SOCKADDR*)&addr, &addrlen);
+	if (client_sock == INVALID_SOCKET) CError::GetInstance()->err_display("Accept");
+
+	return client_sock;
+}
+
+void CListenSocket::Release()
+{
+	closesocket(sock);
+}
+```  
+  
+#### 5. TCP 소켓
 --------------------------------------------------------------  
   
 TCP 소켓 클래스는 순수하게 송신과 수신 기능만을 담당하고 통신에 필요한 멤버 변수를 가지고 있습니다.  
@@ -534,7 +633,7 @@ void CTCPSocket::Release()
 }
 ```  
   
-#### 5. 패킹
+#### 6. 패킹
 --------------------------------------------------------------  
   
 이 클래스는 앞서 만든 TCP 소켓 클래스를 상속 받고 있습니다.
@@ -772,9 +871,238 @@ int CPacking::CompleteRecv(int _completebyte)
 }
 ```  
   
+#### 7. Client
+------------------------------------------------------------------  
+  
+클라이언트들의 정보를 관리하는 클래스입니다.  
+보통 게임 내에 Player 정보나 Room 정보 등을 관리하고 State 패턴 기능 역시 이 클래스에서 관리하게 됩니다.
+아래는 State 패턴과 Player, Room 정보를 관리하고 있는 클라이언트 클래스 입니다.
+  
+#### 헤더
+  
+```  
+#pragma once
+#include "Packing.h"
+#include "State.h"
+#include "Player.h"
+#include "Lobby.h"
+
+class Lobby;
+
+class CInitState;
+class CLoginState;
+class ChatState;
+class Lobby_State;
+class Player_State;
+class Monster_State;
+
+class CClientSection : public CPacking
+{
+protected:
+	// ETC
+	UserInfo* user;
+	bool login_state;
+
+	Player* player;
+	Lobby* lobby_info;
+	bool InGame;
+
+	// State
+	CState* mState;
+
+	CInitState* mInitState;
+	CLoginState* mLoginState;
+	ChatState* mChatState;
+	Lobby_State* mLobbyState;
+	Player_State* mPlayerState;
+	Monster_State* mMonsterState;
+public:
+	CClientSection();
+	CClientSection(SOCKET _sock);
+	~CClientSection();
+
+	// State
+	void SetState(CState* state);
+	CState* GetState();
+
+	CInitState* GetinitState();
+	CLoginState* GetLoginState();
+	ChatState* GetChatState();
+	Lobby_State* GetLobbyState();
+	Player_State* GetPlayerState();
+	Monster_State* GetMonaterState();
+
+	// ETC
+	void Login(UserInfo* _user);
+	void Logout();
+	
+	UserInfo* GetUser() { return user; }
+	bool IsLogin() { return login_state; }
+
+	void player_online(Player* _player);
+	void player_offline();
+	Player* Getplayer() { return player; }
+
+	void Set_RoomInfo(Lobby* lobby) { lobby_info = lobby; }
+	Lobby* Get_RoomInfo() { return lobby_info; }
+
+	void Player_InGame() { InGame = true; }
+	void Player_ExitGame() { InGame = false; }
+
+	bool Get_InGame_State() { return InGame; }
+};
+```  
+  
+#### 구현부
+  
+```  
+#include "ClientSection.h"
+#include "InitState.h"
+#include "LoginState.h"
+#include "ChatState.h"
+#include "Lobby_State.h"
+#include "Player_State.h"
+#include "Monster_State.h"
+
+CClientSection::CClientSection() 
+{
+	user = nullptr;
+	login_state = false;
+
+	player = nullptr;
+	lobby_info = nullptr;
+	InGame = false;
+
+	mInitState = new CInitState();
+	mLoginState = new CLoginState();
+	mChatState = new ChatState();
+	mLobbyState = new Lobby_State();
+	mPlayerState = new Player_State();
+	mMonsterState = new Monster_State();
+
+	mState = mInitState;
+}
+
+CClientSection::CClientSection(SOCKET _sock) : CPacking(_sock)
+{
+	user = nullptr;
+	login_state = false;
+	
+	player = nullptr;
+	lobby_info = nullptr;
+	InGame = false;
+
+	mInitState = new CInitState();
+	mLoginState = new CLoginState();
+	mChatState = new ChatState();
+	mLobbyState = new Lobby_State();
+	mPlayerState = new Player_State();
+	mMonsterState = new Monster_State();
+
+	mState = mInitState;
+}
+
+CClientSection::~CClientSection() 
+{
+	if (user != nullptr) delete user;
+
+	if (player != nullptr) delete player;
+
+	if (mInitState != nullptr) delete mInitState;
+
+	if (mLoginState != nullptr) delete mLoginState;
+}
+
+void CClientSection::SetState(CState* state)
+{
+	mState = state;
+}
+CState* CClientSection::GetState()
+{
+	return mState; 
+}
+
+CInitState* CClientSection::GetinitState() 
+{
+	return mInitState; 
+}
+
+CLoginState* CClientSection::GetLoginState()
+{ 
+	return mLoginState;
+}
+
+ChatState* CClientSection::GetChatState()
+{ 
+	return mChatState;
+}
+
+Lobby_State* CClientSection::GetLobbyState()
+{
+	return this->mLobbyState;
+}
+
+Player_State* CClientSection::GetPlayerState()
+{
+	return this->mPlayerState;
+}
+
+Monster_State* CClientSection::GetMonaterState()
+{
+	return this->mMonsterState;
+}
+
+
+
+void CClientSection::Login(UserInfo* _user)
+{
+	CLock lock;
+
+	user = _user;
+	user->login = true;
+	login_state = true;
+}
+
+void CClientSection::Logout()
+{
+	CLock lock;
+
+	user->login = false;
+	user = nullptr;
+	login_state = false;
+}
+
+void CClientSection::player_online(Player* _player)
+{
+	CLock clock;
+	player = _player;
+}
+
+void CClientSection::player_offline()
+{
+	CLock clock;
+	if (player != nullptr)
+		delete player;
+
+	player = nullptr;
+}
+```  
   
   
   
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+### 클라이언트 라이브러리
+-----------------------------------------  
   
 ### 플레이어 동기화
 -----------------------------------------
