@@ -13,8 +13,9 @@ G-Star 2020 출품, 교내 경진대회 출품 및 최우수상 수상, GGC ( Gl
   
 + 담당 업무 : 서버 / 클라이언트 프로그래머  
   + 서버 세부 업무 : 라이브러리 설계, MYSQL 연동, 본 게임과의 연동 등 전체적인 모든 서버 시스템  
-  + 클라이언트 세부 엄무 : 게임 UI, 옵션, 타이틀 화면과 같은 게임 시스템 기능 및 플레이어 서버 동기화와 보간 기능  
+  + 클라이언트 세부 업무 : 게임 UI, 옵션, 타이틀 화면과 같은 게임 시스템 기능 및 플레이어 서버 동기화와 보간 기능  
   
+이 문서에서는 클라이언트 업무에 대한 자료를 작성하지 않았습니다.  
   
 # 게임 소개
 -------------------------------------------  
@@ -42,9 +43,7 @@ Soul Like 류의 게임 중 대표격인 블러드본, 다크소울과 같은 �
   + 클라이언트 라이브러리  
   + 플레이어 동기화  
   + 서버-클라이언트 보간  
-+ 클라이언트  
-  + 각종 유저 편의 기능  
-    
+   
 # 서버
 -----------------------------------------
 ## 서버 라이브러리
@@ -2164,22 +2163,684 @@ public abstract class State : TCPClient
 }
 ```  
   
+### 4-1. Player State
+----------------------------------------------------------------  
   
+Player, Monster, Login, Match 등 State 패턴으로 관리하고 있는 기능 중 Player State 만 이 문서에 기재합니다.  
+송신 시 사용 할 기능을 정의하고 수신 시 Protocol 를 분리하여 어떤 기능을 할 것인가를 결정하게 됩니다.  
+TCPClient 를 상속받고 있기 때문에 접근이 간단하며 Manager 나 Control 클래스에서 송수신에 관련된 기능을 쉽게 사용할 수 있습니다.  
   
+#### 소스
   
-  
-  
-  
-  
-  
+```  
+using System;
+using System.Text;
+using TCP;
+using UnityEngine;
+
+public class Player_State : State
+{   
+    public void Player_BeginInfoUpdate(int hp)
+    {
+        UInt64 Protocol = (UInt64)CLASS_STATE.PLAYER_STATE | (UInt64)STATE.UPDATE | (UInt64)PROTOCOL.BEGININFO;
+        TCPClient.Instance.PackingData(Protocol, PackingData(Static_Data.m_number, hp, Static_Data.m_jab));
+    }
+
+    public void Player_TransformUpdate(Vector3 position, Quaternion rotation)
+    {
+        UInt64 Protocol = (UInt64)CLASS_STATE.PLAYER_STATE | (UInt64)STATE.UPDATE | (UInt64)PROTOCOL.TRANSFROM;
+        TCPClient.Instance.PackingData(Protocol, PackingData(Static_Data.m_number, position, rotation));
+    }
+
+    public void Player_HPUpdate(UInt64 PROTOCOL, int HP)
+    {
+        UInt64 Protocol = (UInt64)CLASS_STATE.PLAYER_STATE | (UInt64)STATE.UPDATE | PROTOCOL;
+        TCPClient.Instance.PackingData(Protocol, PackingData(Static_Data.m_number, HP));
+    }
+
+    public void Player_UpdateRotation(Quaternion rotation)
+    {
+        UInt64 Protocol = (UInt64)CLASS_STATE.PLAYER_STATE | (UInt64)STATE.UPDATE | (UInt64)PROTOCOL.ROTATION;
+        TCPClient.Instance.PackingData(Protocol, PackingData(Static_Data.m_number, rotation));
+    }
+
+    public void Player_Movement(Vector3 position, Quaternion rotation, float anim)
+    {
+        UInt64 Protocol = (UInt64)CLASS_STATE.PLAYER_STATE | (UInt64)STATE.MOVEMENT | (UInt64)PROTOCOL.MOVE;
+        TCPClient.Instance.PackingData(Protocol, PackingData(Static_Data.m_number, position, rotation, anim));
+    }
+
+    public void Player_FocusMovement(Vector3 position, Quaternion rotation, float forward, float right)
+    {
+        UInt64 Protocol = (UInt64)CLASS_STATE.PLAYER_STATE | (UInt64)STATE.MOVEMENT | (UInt64)PROTOCOL.FOCUS;
+        TCPClient.Instance.PackingData(Protocol, PackingData(Static_Data.m_number, position, rotation, forward, right));
+    }
+
+    public void Player_Animation_Active(UInt64 _Protocol, string anim)
+    {
+        var Protocol = (UInt64)CLASS_STATE.PLAYER_STATE | (UInt64)STATE.ANIMATION | _Protocol;
+        TCPClient.Instance.PackingData(Protocol, PackingData(Static_Data.m_number, anim));
+    }
+
+    public void Player_Animation_Active(UInt64 _Protocol, Vector3 position, Quaternion rotation, string anim)
+    {
+        var Protocol = (UInt64)CLASS_STATE.PLAYER_STATE | (UInt64)STATE.ANIMATION | _Protocol;
+        TCPClient.Instance.PackingData(Protocol, PackingData(Static_Data.m_number, position, rotation, anim));
+    }
+
+    public Vector3 prev_position = Vector3.zero;
+    public Quaternion prev_rotation = Quaternion.identity;
+    public int prev_hp = 0;
+    public string nickname;
+
+    public override void RecvProcess()
+    {
+        UInt64 State = TCPClient.Instance.GetProtocol() & (UInt64)FULL_CODE.SUB;
+        UInt64 Protocol = TCPClient.Instance.GetProtocol() & (UInt64)FULL_CODE.PROTOCOL;
+
+        var buffer = TCPClient.Instance.UnPackingData();
+        if (buffer.size == 0)
+        {
+            print("Queue Empty");
+            return;
+        }
+
+        Debug.Log(string.Format("temp = {0:x}", Protocol));
+
+        int num = 0;
+        Vector3 position = Vector3.zero;
+        Quaternion rotation = Quaternion.identity;
+
+        string string_anim = string.Empty;
+        float float_anim = 0f;
+        int value = 0;
+
+        try
+        {
+            var ohter = GameObject.Find("Other").GetComponent<OtherControl>();
+
+            switch ((STATE)State)
+            {
+                case STATE.MOVEMENT:
+                    switch ((PROTOCOL)Protocol)
+                    {
+                        case PROTOCOL.MOVE:
+                            UnPackingData(buffer, out num, out position, out rotation, out float_anim);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                                ohter.Other_Movement(position, rotation, float_anim);
+                            break;
+
+                        case PROTOCOL.FOCUS:
+                            print("Focus Move");
+                            float forward, right;
+                            UnPackingData(buffer, out num, out position, out rotation, out forward, out right);
+
+                            ohter.Other_FocusMovement(position, rotation, forward, right);
+                            break;
+                    }
+                    break;
+
+                case STATE.UPDATE:
+                    switch ((PROTOCOL)Protocol)
+                    {
+                        case PROTOCOL.BEGININFO:
+                            UnPackingData(buffer, out num, out Static_Data.m_OhterName, out Static_Data.m_OhterJab);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                            {
+                                ohter.Other_InfoSetting(Static_Data.m_OhterName);
+                            }
+                            break;
+
+                        case PROTOCOL.HP:
+                            UnPackingData(buffer, out num, out value);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                                ohter.Other_HP(value);
+                            break;
+
+                        case PROTOCOL.TRANSFROM:
+                            UnPackingData(buffer, out num, out position, out rotation);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                                ohter.Other_UpdateTransform(position, rotation);
+                            break;
+                    }
+                    break;
+
+                case STATE.ANIMATION:
+                    switch ((PROTOCOL)Protocol)
+                    {
+                        case PROTOCOL.RESURRECTION:
+                        case PROTOCOL.GUN:
+                        case PROTOCOL.SERUM:
+                            UnPackingData(buffer, out num, out position, out rotation, out string_anim);
+                            print(string_anim);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                                ohter.Other_Animation_Active(position, rotation, string_anim);
+                            break;
+
+                        case PROTOCOL.HIT:
+                            UnPackingData(buffer, out num, out string_anim);
+                            print(string_anim);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                                ohter.Other_Hit(string_anim);
+                            break;
+
+                        case PROTOCOL.CHARGEDOWN:
+                            UnPackingData(buffer, out num, out string_anim);
+                            print(string_anim);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                                ohter.Other_ChargeDown();
+                            break;
+
+                        case PROTOCOL.CHARGEUP:
+                            UnPackingData(buffer, out num, out string_anim);
+                            print(string_anim);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                                ohter.Other_ChargeUp();
+                            break;
+
+                        case PROTOCOL.EVADE:
+                        case PROTOCOL.ATTACK:
+                        case PROTOCOL.DIE:
+                            UnPackingData(buffer, out num, out string_anim);
+                            print(string_anim);
+
+                            if (ohter == null)
+                                print("Not Search Ohter Object");
+                            else
+                                ohter.Other_Animation_Active(string_anim);
+                            break;
+                    }
+                    break;
+            }
+        }
+        catch
+        {
+            // 아직 플레이어가 로딩 중인 경우
+            print("Not Loading Complete");
+
+            switch ((STATE)State)
+            {
+                case STATE.MOVEMENT:
+                    switch ((PROTOCOL)Protocol)
+                    {
+                        case PROTOCOL.MOVE:
+                            UnPackingData(buffer, out num, out prev_position, out prev_rotation, out float_anim);
+                            break;
+                    }
+                    break;
+
+                case STATE.UPDATE:
+                    switch ((PROTOCOL)Protocol)
+                    {
+                        case PROTOCOL.BEGININFO:
+                            UnPackingData(buffer, out num, out Static_Data.m_OhterName, out Static_Data.m_OhterJab);
+                            break;
+
+                        case PROTOCOL.TRANSFROM:
+                            UnPackingData(buffer, out num, out prev_position, out prev_rotation);
+                            break;
+
+                        case PROTOCOL.HP:
+                            UnPackingData(buffer, out num, out prev_hp);
+                            break;
+                    }
+                    break;
+            }
+        }
+    }
+}
+```  
+    
 ## 플레이어 동기화
 -----------------------------------------
+  
+각 클라이언트 별로 움직이는 플레이어 캐릭터에 대한 동기화는 Other 라는 오로지 다른 클라이언트에게 받은 정보로 움직이는 오브젝트를 만들어 처리하였습니다.  
+Ohter 마다 고유 번호를 가지고 있으며, 서버 또한 각 클라이언트의 고유 번호를 가지고 있어 각각의 Ohter 오브젝트가 누구의 캐릭터인 지 식별이 가능합니다.  
+애니메이션 또한 플레이어 캐릭터의 Animation Controller 내에 키값을 서버에게 받아 그래도 출력해 줌으로써 동기화에 성공하였습니다.  
+  
+이동 시 Lerp 를 사용한 이유는 서버와 클라이언트 간 보간을 위해서 사용하였습니다.  
+  
+#### 소스
+  
+```  
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using TCP;
+using UnityEngine;
+using UnityEngine.Experimental.PlayerLoop;
+
+public class OtherControl : MonoBehaviour
+{    
+    public Animator Anim = null;
+    CharacterController CC = null;
+    PlayerAnimControl player_anim = null;
+    Health m_Health;
+
+    public string nickname;
+    Vector2 AnimValue_2D;
+    bool FocusState;
+
+    public bool In;
+
+    public Vector3 client_position;
+    Quaternion client_rotation;
+
+    public GameObject Black;
+    public GameObject White;
+
+    public GameObject White_gAttack, White_BPAttack;
+
+
+    public Wallchecktrigger player_wc;
+
+
+    void OtherType_Setting()
+    {
+        if (Black == null)
+            Black = transform.Find("NewModelFix").gameObject;
+        if (White == null)
+            White = transform.Find("MODEL2").gameObject;
+
+        if (Static_Data.m_OhterJab == "Player1")
+        {
+            player_wc.pac = Black.GetComponent<PlayerAnimControl>();
+            Black.SetActive(true);
+            White.SetActive(false);
+        }
+        else
+        {
+            player_wc.pac = White.GetComponent<PlayerAnimControl>();
+            Black.SetActive(false);
+            White.SetActive(true);
+
+            gAttack = White_gAttack;
+            bpAttack = White_BPAttack;
+        }
+
+        Anim = GetComponentInChildren<Animator>();
+        player_anim = GetComponentInChildren<PlayerAnimControl>();
+
+        Anim.SetBool("BasicState", true);
+        StartCoroutine(AnimationUpdate());
+    }
+
+    IEnumerator Start()
+    {
+        yield return new WaitForSeconds(0.01f);
+        if (Static_Data.m_OhterJab != string.Empty)
+            OtherType_Setting();
+
+        client_position = transform.position;
+        client_rotation = transform.rotation;
+
+        CC = GetComponent<CharacterController>();
+        m_Health = GetComponent<Health>();
+
+        AnimValue_2D = Vector2.zero;
+        FocusState = false;
+
+        if (Static_Data.m_OhterName != string.Empty)
+            nickname = Static_Data.m_OhterName;
+
+        if (TCPClient.m_Player != null && TCPClient.m_Player.prev_hp != 0)
+            Other_HP(TCPClient.m_Player.prev_hp);
+    }
+
+    bool PushObjectBackInFrustum()
+    {
+        if (Physics.Linecast(transform.position, Camera.main.transform.position, 1 << 14))
+        {
+            return true;
+        }
+
+        if (Camera.main != null)
+        {
+            Vector3 pos = Camera.main.WorldToViewportPoint(transform.position);
+
+            if ((pos.x < 0f || pos.x > 1f || pos.y < 0f || pos.y > 1f || pos.z < 0f) || Anim == null)
+                return true;
+            else return false;
+        }
+        return false;
+    }
+
+    // Update is called once per frame
+    void Update()
+    {
+        Transform_Lerp();
+
+        if (PushObjectBackInFrustum())
+        {
+            In = false;
+        }
+        else
+        {
+            In = true;
+        }
+    }
+
+    IEnumerator AnimationUpdate()
+    {
+        StartCoroutine(Attack_Effect());
+
+        while (true)
+        {
+            if (Anim.GetBool("BasicState"))
+            {
+                Anim.SetFloat("Forward", AnimValue_2D.x, 0.1f, Time.deltaTime);
+            }
+            else if (Anim.GetBool("FocusState"))
+            {
+                Anim.SetFloat("Forward", AnimValue_2D.x, 0.1f, Time.deltaTime);
+                Anim.SetFloat("Right", AnimValue_2D.y, 0.1f, Time.deltaTime);
+
+            }
+            yield return null;
+        }
+    }
+
+    public void Other_InfoSetting(string name)
+    {
+        nickname = name;
+        OtherType_Setting();
+        print(name);
+    }
+
+    void Ohter_AnimationMovement()
+    {
+        if (Anim.GetBool("BasicState"))
+        {            
+            if (/*Anim.GetBool("Attacking") || Anim.GetBool("BPAttacking") || Anim.GetBool("ChargeAttacking") || */Anim.GetBool("UseEvade"))
+            {
+                CC.Move(transform.forward * player_anim.TranslateSpeed * Time.deltaTime);
+            }
+        }
+	
+        client_position = transform.position;
+        client_rotation = transform.rotation;
+    }
+
+    void Transform_Lerp()
+    {
+        var lerppos = Vector3.Lerp(transform.position, client_position, 0.1f);
+        transform.position = lerppos;
+
+        var lerprot = Quaternion.Lerp(transform.rotation, client_rotation, 0.2f);
+        transform.rotation = lerprot;
+
+        if (Vector3.Distance(transform.position, client_position) < 0.2f && animation_active)
+        {
+            transform.position = client_position;
+            transform.rotation = client_rotation;
+
+            Anim.SetTrigger(animation_name);
+            animation_active = false;
+        }
+
+        if (AnimValue_2D != Vector2.zero)
+        {
+            if (Vector3.Distance(transform.position, client_position) < 0.2f)
+            {
+                if (AnimValue_2D.sqrMagnitude < 0.1f)
+                    AnimValue_2D = Vector2.zero;
+                else
+                {
+                    AnimValue_2D.x = Mathf.Lerp(AnimValue_2D.x, 0f, 0.2f);
+                    AnimValue_2D.y = Mathf.Lerp(AnimValue_2D.y, 0f, 0.2f);
+                }
+            }
+        }
+    }
+
+    public void Other_Movement(Vector3 pos, Quaternion rot, float anim)
+    {
+        client_position = pos;
+        client_rotation = rot;              
+
+        Anim.SetBool("FocusState", false);
+        Anim.SetBool("BasicState", true); // 기본상태값을 true화시킨다.
+        AnimValue_2D.x = anim;       
+    }
+
+    public void Other_FocusMovement(Vector3 pos, Quaternion rot, float forward, float right)
+    {
+        client_position = pos;
+        client_rotation = rot;
+
+        Anim.SetBool("FocusState", true);
+        Anim.SetBool("BasicState", false); // 기본상태값을 true화시킨다.
+
+        AnimValue_2D.x = forward;
+        AnimValue_2D.y = right;
+    }
+
+    public GameObject gAttack;
+    public GameObject bpAttack;
+
+    IEnumerator Attack_Effect()
+    {
+        var playerAnimControl = GetComponentInChildren<PlayerAnimControl>();
+
+        while (true)
+        {
+            // 플레이어가 공격중이라면
+            if (Anim.GetBool("Attacking") || Anim.GetBool("BPAttacking") || Anim.GetBool("ChargeAttacking"))
+            {
+                if (Anim.GetBool("BPAttacking") && playerAnimControl.effect_run) // 블러드 포이트 공격중이라면
+                {
+                    // 블러드 포인트 공격 이펙트 켜기
+                    gAttack.SetActive(false);
+                    bpAttack.SetActive(true);
+                }
+                else if (Anim.GetBool("Attacking") && playerAnimControl.effect_run) // 일반 공격중이라면
+                {
+                    // 일판 공격 이펙트 켜기
+                    bpAttack.SetActive(false);
+                    gAttack.SetActive(true);
+                }
+                else if (Anim.GetBool("ChargeAttacking") && playerAnimControl.effect_run)
+                {
+                    // 차징 공격 이펙트 켜기
+                    // 일단 기본 공격
+                    bpAttack.SetActive(true);
+                    gAttack.SetActive(false);
+                }
+                else
+                {
+                    gAttack.SetActive(false);
+                    bpAttack.SetActive(false);
+                }
+            }
+            else // 플레이어가공격중이 아니라면
+            {
+                gAttack.SetActive(false);
+                bpAttack.SetActive(false);
+            }
+            yield return null;
+        }
+    }
+
+    public void Other_UpdateTransform(Vector3 pos, Quaternion rot)
+    {
+        client_position = pos;
+        client_rotation = rot;
+    }
+
+    public void Other_PrevUpdateTransform(Vector3 pos, Quaternion rot)
+    {
+        client_position = pos;
+        client_rotation = rot;
+
+        transform.position = pos;
+        transform.rotation = rot;
+    }
+
+    public void Other_HP(int value)
+    {
+        m_Health.curHP = value;
+    }
+
+    public void Other_Hit(string name)
+    {
+        if (!Anim.GetBool("OnHit"))
+        {
+            if (name == "BigHit2")
+            {
+                Anim.SetFloat("Forward", 0f);
+                Anim.SetFloat("Right", 0f);
+
+                Anim.SetTrigger(name);
+            }
+            else
+                Anim.SetBool(name, true);
+        }
+    }
+
+    public void Other_ChargeDown()
+    {
+        Anim.SetFloat("Forward", 0f);
+        Anim.SetFloat("Right", 0f);
+
+        if (Anim.GetBool("Attacking"))
+        {
+            player_anim.Combo_Check_End();
+            Anim.SetBool("NextKey", true);
+        }
+        else if (Anim.GetBool("BPAttacking"))
+        {
+            player_anim.BPCombo_Attack_End();
+            Anim.SetBool("NextKey", true);
+        }
+        else if (Anim.GetBool("GunAttacking"))
+        {
+            player_anim.Gun_Attack_End();
+            Anim.SetBool("NextKey", true);
+        }
+
+        Anim.SetBool("ChargeButtonDown", true);
+    }
+
+    public void Other_ChargeUp()
+    {
+        Anim.SetBool("ChargeButtonDown", false);
+    }
+
+    public void Other_Animation_Active(string name)
+    {
+        Anim.SetFloat("Forward", 0f);
+        Anim.SetFloat("Right", 0f);
+  
+        Anim.SetTrigger(name);
+    }
+
+    bool animation_active = false;
+    string animation_name = string.Empty;
+
+    public void Other_Animation_Active(Vector3 pos, Quaternion rot, string name)
+    {
+        client_position = pos;
+        client_rotation = rot;
+
+        if (name != "Alive")
+        {
+            animation_name = name;
+            animation_active = true;
+        }
+        else
+        {
+            transform.position = pos;
+            transform.rotation = rot;
+
+            Anim.SetFloat("Forward", 0f);
+            Anim.SetFloat("Right", 0f);
+
+            Anim.SetTrigger(name);
+        }
+    }
+}
+```  
   
 ## 서버-클라이언트 보간
 -----------------------------------------
   
-# 클라이언트
------------------------------------------
-## 각종 유저 편의 기능
+사실 실시간 멀티 게임 서버에서 매 프레임마다 서버와 클라이언트가 패킷을 주고 받을 수 있다면 여러 기법을 필요가 없었겠지만 아쉽게도 그것은 불가능 하였습니다.  
+그렇기에 선대에 많은 프로그래머 분들이 고민하고 고민하여 다양한 기법들을 만들어 왔고, 저 역시 그 기법들 중 하나를 채택하여 사용하게 되었습니다.  
   
------------------------------------------
+제가 채택한 기법은 데드 레커닝 기법으로 신호가 없을 때 어떻게 처리할 것인가? 에 대한 기법이었습니다.  
+만약 5 프레임마다 보내게 된다면 0~4 프레임 동안 신호를 받지 못하게 되고, 캐릭터의 움직임이 끊기게 되는 현상을 해결하고자  
+저는 0 -> 5 프레임까지의 최종 위치값을 방향 벡터를 통해 예상하고 예상 위치값으로 Lerp 를 통해 이동시켜 성공적으로 보간 문제를 해결했습니다.  
+  
+#### 소스
+  
+```  
+	// 매 5 프레임 마다 예상 위치값 계산 후 전달
+	if (FrameCheck > 5)
+        {
+            FrameCheck = -1;
+            var pos = transform.position + (transform.forward * moveSpeed * Time.deltaTime * 5);
+
+            try
+            {
+                if (Other.activeInHierarchy)
+                    TCPClient.m_Player.Player_Movement(pos, transform.rotation, InputMagnitude);
+            }
+            catch
+            {
+                moving = false;
+            }
+        }
+```  
+  
+추가로 소스에는 없지만 이동이 완료되었거나, 도중 이동이 취소되는 경우 ( ex. 공격, 피격, 회피 등 ) 에는 예상 위치값이 아닌 현재 위치값을 보내줍니다.  
+공격이나 회피와 같이 캐릭터 좌표가 이동되는 경우에도 데드 레커닝 기법이 적용되어 있습니다.  
+  
+# 그 외  
+-------------------------------------------  
+## 맡은 역할
+-------------------------------------------
+  
+서버와 클라이언트를 모두 담당했던 포지션으로  
+서버 라이브러리 설계와 클라이언트 라이브러리 설계, 서버와 클라이언트 간 보간 작업, 플레이어 동기화 등을 맡았고,  
+클라이언트 부분에서는 게임 유저 편의 시스템, 타이틀 메뉴 시스템, 캐릭터 선택 시스템 등 게임 시스템 부분을 담당 하였습니다.  
+  
+## 프로젝트를 진행하며 어려웠던 점
+--------------------------------------------  
+  
+작업을 함에 있어서는 크게 어려웠던 점이 없었으나, 적지 않은 사람들과 각기 다른 분야에서 협업을 하며 게임을 제작함에 있어서 다소 어려움이 많았던 것 같았습니다.  
+아직 다른 파트에서 작업을 완료하지 못하여 일정에 차질이 생기거나, 학업에도 신경을 써야 했던 점이 조금 어려웠습니다.  
+개인적으로 가장 힘들었던 시기는 예상치 못한 일로 인해 제게 다른 파트의 일이 모두 맡겨졌었고, 엄청난 부담감으로 인해 힘들었던 것 같았습니다.  
+  
+## 개선되거나 학습한 점  
+--------------------------------------------  
+  
+프로젝트를 하면서 혼자서는 할 수 없는 일이 같이 하면 충분히 할 수 있게 된다는 점을 일단 많이 배웠던 것 같습니다.  
+막히는 부분이 있다면 서로 의견을 나누며 끝내 해결했던 과정이 제일 값졌던 것 같고, 타인과의 소통에 있어서도 많은 부분을 배웠습니다.  
+특히 타협이라는 부분에서 많이 개선할 수 있었던 것 같습니다.  
+  
+무엇보다 제일 힘든 시기를 끝내 이겨낼 수 있었던 건 분명 옆에서 같이 고민해주던 팀원들이 있었던 덕분이라는 점을 알 수 있었습니다.  
+  
