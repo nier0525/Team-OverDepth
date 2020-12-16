@@ -52,6 +52,7 @@ Soul Like 류의 게임 중 대표격인 블러드본, 다크소울과 같은 �
 서버 라이브러리는 IOCP 를 기반으로 설계되었으며 DB 는 MYSQL 과 연동하고 있습니다.  
   
 #### 1. 프로토콜
+--------------------------------------------------------------  
   
 프로토콜은 바이트 연산을 이용하여 그 기능과 역할을 세분화하여 관리하기 용이하도록 구현하였고, 기본적으로 Main, Sub, Protocol 로 나누어 사용하고 있습니다.  
   
@@ -136,6 +137,7 @@ bool CProtocol::ProtocolUnpacker(unsigned __int64 _full_code, unsigned __int64 m
 ```  
   
 #### 2. MYSQL 연동
+--------------------------------------------------------------  
   
 DB 는 MYSQL 을 사용하여 관리하도록 구현 하였고, 본 게임에서는 유저의 계정 정보 정도만 관리하고 있습니다.  
 구현된 기능은 저장하기, 불러오기, 데이터 입력, 쿼리 선택, 데이터베이스 선택 이 있으며, 이후에도 필요 시 추가 할 예정입니다.  
@@ -287,6 +289,7 @@ void CMySQLDBManager::End()
 ```  
   
 #### 3. 크리티컬 섹션
+--------------------------------------------------------------  
   
 IOCP 가 기반이라 하더라도 다른 클라이언트가 사용 중인 데이터는 중첩으로 사용하게 하면 분명히 문제가 되기 때문에 크리티컬 섹션을 이용하여 이를 방지하였습니다.  
 다만, 매번 Enter, Leave 함수를 사용하는 것은 기능이 많아질수록 관리하기 힘들어지고 혹시라도 Leave 기능을 잊고 사용하지 않으면 치명적인 문제를 발생하기 때문에 단 한 번의 호출로 Enter 와 Leave 가 자동으로 되게끔 구현하였습니다.  
@@ -349,6 +352,424 @@ public:
 
 template <class T>
 CriticalSection_EX CMultiThreadSyns<T>::cs;
+```  
+  
+#### 4. TCP 소켓
+--------------------------------------------------------------  
+  
+TCP 소켓 클래스는 순수하게 송신과 수신 기능만을 담당하고 통신에 필요한 멤버 변수를 가지고 있습니다.  
+멤버 변수로 가지고 있는 WSAOverLapped_EX 구조체는 전달 받은 클라이언트의 정보를 식별하기 위해서 재정의 한 것 입니다.  
+이후 Packing 클래스와 Client 클래스는 이 클래스를 상속 받아 사용하게 됩니다.  
+  
+#### WSAOverLapped_EX
+  
+```  
+struct WSAOverLapped_EX
+{
+	WSAOVERLAPPED overlapped;
+	LPVOID ptr;
+	IO_TYPE type;
+};
+```  
+  
+#### 헤더
+  
+```  
+#pragma once
+#include "Error.h"
+#include "CriticalSection.h"
+
+class CTCPSocket : public CMultiThreadSyns<CTCPSocket>
+{
+protected:
+	WSAOverLapped_EX recv_overlapped;
+	WSAOverLapped_EX send_overlapped;
+
+	SOCKET sock;
+	SOCKADDR_IN addr;
+
+	WSABUF wsa_recv_buf;
+	WSABUF wsa_send_buf;
+
+public:
+	CTCPSocket();
+	CTCPSocket(SOCKET _sock);
+	~CTCPSocket();
+
+	bool WSA_Recv(char* buf, int len);
+	bool WSA_Send(char* buf, int len);
+
+	bool WSA_Recv(char* buf, int len, const DWORD _count);
+	bool WSA_Send(char* buf, int len, const DWORD _count);
+
+	SOCKET GetSocket() { return sock; }
+	SOCKADDR_IN GetAddr() { return addr; }
+
+	void Release();
+};
+```  
+  
+#### 구현부
+  
+```  
+#include "TCPSocket.h"
+
+CTCPSocket::CTCPSocket()
+{
+	sock = NULL;
+	ZeroMemory(&addr, sizeof(addr));
+
+	recv_overlapped.ptr = this;
+	recv_overlapped.type = IO_TYPE::IO_RECV;
+
+	send_overlapped.ptr = this;
+	send_overlapped.type = IO_TYPE::IO_SEND;
+}
+
+CTCPSocket::CTCPSocket(SOCKET _sock)
+{
+	sock = _sock;
+
+	int addrlen = sizeof(addr);
+	getpeername(sock, (SOCKADDR*)&addr, &addrlen);
+
+	recv_overlapped.ptr = this;
+	recv_overlapped.type = IO_TYPE::IO_RECV;
+
+	send_overlapped.ptr = this;
+	send_overlapped.type = IO_TYPE::IO_SEND;
+}
+
+CTCPSocket::~CTCPSocket()
+{
+	Release();
+}
+
+bool CTCPSocket::WSA_Recv(char* buf,  int len)
+{
+	DWORD recvbyte;
+	DWORD flag = 0;
+	ZeroMemory(&recv_overlapped.overlapped, sizeof(recv_overlapped.overlapped));
+
+	wsa_recv_buf.buf = buf;
+	wsa_recv_buf.len = len;
+
+	int retval = WSARecv(sock, &wsa_recv_buf, 1, &recvbyte, &flag, &recv_overlapped.overlapped, nullptr);
+	if (retval == SOCKET_ERROR)
+	{
+		if (WSAGetLastError() != WSA_IO_PENDING)
+		{
+			printf("%d\n", WSAGetLastError());
+			CError::GetInstance()->err_display("WSARecv");
+			return false;
+		}
+	}
+	return true;
+}
+
+bool CTCPSocket::WSA_Send(char* buf, int len)
+{
+	DWORD sendbyte;
+	ZeroMemory(&send_overlapped.overlapped, sizeof(send_overlapped.overlapped));
+
+	wsa_send_buf.buf = buf;
+	wsa_send_buf.len = len;
+
+	int retval = WSASend(sock, &wsa_send_buf, 1, &sendbyte, 0, &send_overlapped.overlapped, nullptr);
+	if (retval == SOCKET_ERROR)
+	{
+		if (WSAGetLastError() != WSA_IO_PENDING)
+		{
+			CError::GetInstance()->err_display("WSASend");
+			return false;
+		}
+	}
+	return true;
+}
+
+bool CTCPSocket::WSA_Recv(char* buf, int len, const  
+	DWORD _count)
+{
+	DWORD recvbyte, flag;
+	ZeroMemory(&recv_overlapped.overlapped, sizeof(recv_overlapped.overlapped));
+
+	wsa_recv_buf.buf = buf;
+	wsa_recv_buf.len = len;
+
+	int retval = WSARecv(sock, &wsa_recv_buf, _count, &recvbyte, &flag, &recv_overlapped.overlapped, nullptr);
+	if (retval == SOCKET_ERROR)
+	{
+		if (WSAGetLastError() != WSA_IO_PENDING)
+		{
+			CError::GetInstance()->err_display("WSARecv");
+			return false;
+		}
+	}
+	return true;
+}
+
+bool CTCPSocket::WSA_Send(char* buf, int len, const DWORD _count)
+{
+	DWORD sendbyte;
+	ZeroMemory(&send_overlapped.overlapped, sizeof(send_overlapped.overlapped));
+
+	wsa_send_buf.buf = buf;
+	wsa_send_buf.len = len;
+
+	int retval = WSASend(sock, &wsa_send_buf, _count, &sendbyte, 0, &send_overlapped.overlapped, nullptr);
+	if (retval == SOCKET_ERROR)
+	{
+		if (WSAGetLastError() != WSA_IO_PENDING)
+		{
+			CError::GetInstance()->err_display("WSASend");
+			return false;
+		}
+	}
+	return true;
+}
+
+void CTCPSocket::Release() 
+{
+	closesocket(sock);
+}
+```  
+  
+#### 5. 패킹
+--------------------------------------------------------------  
+  
+이 클래스는 앞서 만든 TCP 소켓 클래스를 상속 받고 있습니다.
+기본적으로 데이터를 자주 주고 받는 것 보단 한 번에 많은 양이라도 최소한으로 주고 받는 것이 좋기 때문에 보내고자 하는 데이터를 하나의 Pack 으로 만들어 보내게 됩니다.  
+이 클래스에서는 Pack 을 만들어주고, 받은 Pack 을 다시 UnPack 해주는 기능을 담당하고 있습니다.  
+또한 데이터를 잔여 데이터가 남지 않도록 온전히 송신, 수신을 할 수 있는 기능 역시 이 클래스가 담당하고 있습니다.  
+
+또한 송신을 할 때 2개 이상의 송신 Pack 이 대기중인 경우, 자칫 데이터가 꼬일 수 있기 때문에 Queue 를 사용하여 데이터 꼬임을 방지하고 있습니다.  
+  
+#### 헤더
+  
+```  
+#pragma once
+#include "TCPSocket.h"
+
+struct QueueSendData
+{
+	int sendbytes;
+	int comp_sendbytes;
+
+	char sendbuf[BUFSIZE];
+};
+
+class CPacking : public CTCPSocket
+{
+protected:
+	int recvbytes;
+	int comp_recvbytes;
+
+	char recvbuf[BUFSIZE];
+
+	bool recv_sizeflag;
+
+	queue<QueueSendData*>* sendbuf;
+public:
+	CPacking();
+	CPacking(SOCKET _sock);
+	~CPacking();
+
+	//이부분 수정필요
+	unsigned __int64 GetProtocol();
+	const char* UnPackData();
+
+	bool Recv();
+	int CompleteRecv(int _completebyte);
+
+	void PackingData(unsigned __int64 protocol, const char* buf, int _size);
+
+	bool Send();
+	int CompleteSend(int _completebyte);
+
+	
+};
+```  
+  
+#### 구현부
+  
+```  
+#include "Packing.h"
+#include"Crypt.h"
+
+CPacking::CPacking()
+{
+	recvbytes = 0;
+	comp_recvbytes = 0;
+	ZeroMemory(recvbuf, sizeof(recvbuf));
+
+	recv_sizeflag = false;
+
+	sendbuf = new queue<QueueSendData*>();
+}
+
+CPacking::CPacking(SOCKET _sock) : CTCPSocket(_sock)
+{
+	recvbytes = 0;
+	comp_recvbytes = 0;
+	ZeroMemory(recvbuf, sizeof(recvbuf));
+
+	recv_sizeflag = false;
+
+	sendbuf = new queue<QueueSendData*>();
+}
+
+CPacking::~CPacking()
+{
+	delete sendbuf;
+}
+
+void CPacking::PackingData(unsigned __int64 protocol, const char* buf, int _size)
+{
+	CLock lock;
+	char encrypt[4096];
+	ZeroMemory(encrypt, sizeof(encrypt));
+	QueueSendData* data = new QueueSendData;
+	ZeroMemory(data, sizeof(QueueSendData));
+	char* ptr = data->sendbuf;
+	int size = 0;
+
+	ptr = ptr + sizeof(size);
+
+
+
+	memcpy(ptr, &protocol, sizeof(unsigned __int64));
+	ptr = ptr + sizeof(unsigned __int64);
+	size = size + sizeof(unsigned __int64);
+
+	if (buf != nullptr)
+	{
+		memcpy(ptr, buf, _size);
+		size = size + _size;
+	}
+
+	CCrypt::Decrypt((BYTE*)buf, (BYTE*)encrypt, size);
+	//데이터 첫번째 전체 패킷 길이를 제외한 packing이 다된 상태에서 암호화를 진행 해야 하므로.
+
+	ptr = data->sendbuf;
+	memcpy(ptr, &size, sizeof(int));
+
+	size = size + sizeof(int);
+	data->sendbytes = size;
+
+	sendbuf->push(data);
+}
+
+bool CPacking::Send()
+{
+	CLock lock;
+	if (sendbuf->size() > 1)
+	{
+		printf("sendbuf->size() = %d\n", sendbuf->size());
+		return false;
+	}
+
+	return WSA_Send(sendbuf->front()->sendbuf + sendbuf->front()->comp_sendbytes, sendbuf->front()->sendbytes - sendbuf->front()->comp_sendbytes);
+}
+
+int CPacking::CompleteSend(int _completebyte)
+{
+	CLock lock;
+
+	sendbuf->front()->comp_sendbytes += _completebyte;
+
+	if (sendbuf->front()->comp_sendbytes == sendbuf->front()->sendbytes)
+	{
+		sendbuf->pop();
+
+		if (sendbuf->empty())
+		{
+			return SOC_TRUE;
+		}
+		else
+		{
+			if (!Send()) return SOC_ERROR;
+			return SOC_FALSE;
+		}
+	}
+
+	if (!Send()) return SOC_ERROR;
+
+	return SOC_FALSE;
+}
+//이부분 수정
+unsigned __int64 CPacking::GetProtocol()
+{
+	//CLock lock;
+
+	unsigned __int64 protocol;
+	memcpy(&protocol, recvbuf, sizeof(unsigned __int64));
+	return protocol;
+}
+
+const char* CPacking::UnPackData()
+{
+	//CLock lock;
+	//이부분 수정
+	const char* ptr = recvbuf + sizeof(unsigned __int64);
+	return ptr;
+}
+
+bool CPacking::Recv()
+{
+	//CLock lock;
+
+	int len;
+	if (recv_sizeflag)
+	{
+		len = recvbytes - comp_recvbytes;
+	}
+	else
+	{
+		len = sizeof(int) - comp_recvbytes;
+	}
+
+	return WSA_Recv(recvbuf + comp_recvbytes, len);
+}
+
+int CPacking::CompleteRecv(int _completebyte)
+{
+	//CLock lock;
+	char decrypt[4096];
+	ZeroMemory(decrypt, sizeof(decrypt));
+	if (!recv_sizeflag)
+	{
+		comp_recvbytes += _completebyte;
+
+		if (comp_recvbytes == sizeof(int))
+		{
+			memcpy(&recvbytes, recvbuf, sizeof(int));
+			comp_recvbytes = 0;
+			recv_sizeflag = true;
+		}
+
+		if (!Recv()) return SOC_ERROR;
+
+		return SOC_FALSE;
+	}
+
+	comp_recvbytes += _completebyte;
+
+	if (comp_recvbytes == recvbytes)
+	{
+		//CCrypt::Decrypt((BYTE*)recvbuf, (BYTE*)decrypt, recvbytes);//데이터가 다 받아진 상태에서 복호화를 진행 해야 하므로.
+		comp_recvbytes = 0;
+		recvbytes = 0;
+		recv_sizeflag = false;
+
+		return SOC_TRUE;
+	}
+	else
+	{
+		if (!Recv()) return SOC_ERROR;
+
+		return SOC_FALSE;
+	}
+}
 ```  
   
   
