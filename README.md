@@ -45,14 +45,14 @@ Soul Like 류의 게임 중 대표격인 블러드본, 다크소울과 같은 �
 + 클라이언트  
   + 각종 유저 편의 기능  
     
-## 서버
+# 서버
 -----------------------------------------
-### 서버 라이브러리
+## 서버 라이브러리
 -----------------------------------------
   
 서버 라이브러리는 IOCP 를 기반으로 설계되었으며 DB 는 MYSQL 과 연동하고 있습니다.  
   
-#### 1. Protocol
+### 1. Protocol
 --------------------------------------------------------------  
   
 프로토콜은 바이트 연산을 이용하여 그 기능과 역할을 세분화하여 관리하기 용이하도록 구현하였고, 기본적으로 Main, Sub, Protocol 로 나누어 사용하고 있습니다.  
@@ -137,7 +137,7 @@ bool CProtocol::ProtocolUnpacker(unsigned __int64 _full_code, unsigned __int64 m
 }
 ```  
   
-#### 2. MYSQL
+### 2. MYSQL
 --------------------------------------------------------------  
   
 DB 는 MYSQL 을 사용하여 관리하도록 구현 하였고, 본 게임에서는 유저의 계정 정보 정도만 관리하고 있습니다.  
@@ -289,7 +289,7 @@ void CMySQLDBManager::End()
 }
 ```  
   
-#### 3. CriticalSection_EX
+### 3. CriticalSection_EX
 --------------------------------------------------------------  
   
 IOCP 가 기반이라 하더라도 다른 클라이언트가 사용 중인 데이터는 중첩으로 사용하게 하면 분명히 문제가 되기 때문에 크리티컬 섹션을 이용하여 이를 방지하였습니다.  
@@ -355,7 +355,7 @@ template <class T>
 CriticalSection_EX CMultiThreadSyns<T>::cs;
 ```  
   
-#### 4. Listen Socket
+### 4. Listen Socket
 --------------------------------------------------------------  
   
 Listen 소켓 클래스는 TCP 통신 준비와 Accept 기능을 담당하고 있습니다.  
@@ -453,7 +453,7 @@ void CListenSocket::Release()
 }
 ```  
   
-#### 5. TCP Socket
+### 5. TCP Socket
 --------------------------------------------------------------  
   
 TCP 소켓 클래스는 순수하게 송신과 수신 기능만을 담당하고 통신에 필요한 멤버 변수를 가지고 있습니다.  
@@ -633,7 +633,7 @@ void CTCPSocket::Release()
 }
 ```  
   
-#### 6. Packing
+### 6. Packing
 --------------------------------------------------------------  
   
 이 클래스는 앞서 만든 TCP 소켓 클래스를 상속 받고 있습니다.
@@ -871,7 +871,7 @@ int CPacking::CompleteRecv(int _completebyte)
 }
 ```  
   
-#### 7. Client
+### 7. Client
 ------------------------------------------------------------------  
   
 클라이언트들의 정보를 관리하는 클래스입니다.  
@@ -1088,7 +1088,7 @@ void CClientSection::player_offline()
 }
 ```  
   
-#### State
+### 8. State
 -------------------------------------------------------------------------
   
 기능을 세분화하여 관리를 더욱 쉽게 하기 위해 사용한 상태 패턴 입니다.
@@ -1122,26 +1122,613 @@ public:
 };
 ```  
   
+### 9. Server Manager
+-----------------------------------------------------------------
+  
+서버에 중추적인 기능을 담당하고 있는 클래스 입니다.  
+Accept, Recv, Send, Disconnected 등 서버의 메인 메커니즘이 돌아가는 Manager 입니다.
+  
+#### 헤더
+  
+```  
+#pragma once
+#include "CriticalSection.h"
+#include "MySQLDataBaseManager.h"
+#include "ListenSocket.h"
+#include "IOCPManager.h"
+#include "CProtocol.h"
+
+#include "ClientManager.h"
+#include "LoginManager.h"
+#include "ChatManager.h"
+#include "Lobby_Manager.h"
+#include "Player_Manager.h"
+#include "MonsterManager.h"
+
+class CServerManager : public CIOCPManager
+{
+private:
+	static CServerManager* pthis;
+	vector<unsigned __int64> class_state;
+	CServerManager();
+	~CServerManager();
+
+	CListenSocket* mListenSock;
+public:
+	static CServerManager* GetInstance();
+	static void Destory();
+
+	bool Begin();
+	void Run();
+	void End();
+
+	int Recv(void* ptr, int len);
+	int Send(void* ptr, int len);
+	void Disconneted(void* ptr);
+	void Accept(void* ptr);
+};
+```  
+  
+#### 구현부  
+  
+```  
+#include "ServerManager.h"
+#include "LoginState.h"
+#include "ChatState.h"
+#include "Lobby_State.h"
+#include "Player_State.h"
+#include "Monster_State.h"
+
+CServerManager* CServerManager::pthis = nullptr;
+
+CServerManager* CServerManager::GetInstance()
+{
+	/*Create 순서
+	ERROR -> PROTOCOL -> ClientManager-> DB -> Login -> Lobby -> CHAT n PLAYER -> ServerManager
+	*/
+	CError::Create();
+	CProtocol::Create();
+	ClientManager::Create();
+	CMySQLDBManager::Create();
+	LoginManager::Create();
+	Lobby_Manager::Create();
+	ChatManager::Create();
+	PlayerManager::Create();
+	MonsterManager::Create();
+
+	if (!pthis) pthis = new CServerManager();
+	return pthis;
+}
+
+void CServerManager::Destory()
+{
+	/*Destroy 순서
+	CHAT n PLAYER-> Lobby-> Login-> ClientManager-> DB -> PROTOCOL-> ERROR-> ServerManager
+	*/
+	ChatManager::Destroy();
+	Lobby_Manager::Destroy();
+	LoginManager::Destroy();
+	ClientManager::Destroy();
+	CMySQLDBManager::Destroy();
+	CProtocol::Destroy();
+	CError::Destroy();
+	PlayerManager::Destroy();
+	MonsterManager::Destroy();
+
+	if (pthis) delete pthis;
+}
+
+CServerManager::CServerManager()
+{
+	mListenSock = nullptr;
+}
+
+CServerManager::~CServerManager()
+{
+	if (mListenSock != nullptr)
+		delete mListenSock;
+}
+
+bool CServerManager::Begin()
+{
+	// WSA Setting
+	WSADATA wsa;
+	if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) return false;
+
+	// IOCP Setting
+	if (!BeginIOCP()) return false;
+
+	// Listen Setting
+	mListenSock = new CListenSocket();
+	mListenSock->TCP_Setting(nullptr, PORT);
+	mListenSock->Listen();
+
+	// Manager Setting/
+	CMySQLDBManager::GetInstance()->Begin();
+	ClientManager::GetInstance()->Begin();
+	LoginManager::GetInstance()->Begin();
+	Lobby_Manager::GetInstance()->Begin();
+	ChatManager::GetInstance()->Begin();
+	PlayerManager::GetInstance()->Begin();
+	MonsterManager::GetInstance()->Begin();
+
+	/*
+	state input
+	INIT_STATE =  0x0100000000000000,
+	LOGIN_STATE = 0x0200000000000000,
+	CHAT_STATE =  0x0300000000000000,
+	LOBBY_STATE = 0x0400000000000000,
+	PLAYER_STATE = 0x0500000000000000,
+	*/
+
+	this->class_state.push_back((unsigned __int64)CLASS_STATE::INIT_STATE);
+	this->class_state.push_back((unsigned __int64)CLASS_STATE::CHAT_STATE);
+	this->class_state.push_back((unsigned __int64)CLASS_STATE::LOBBY_STATE);
+	this->class_state.push_back((unsigned __int64)CLASS_STATE::LOGIN_STATE);
+	this->class_state.push_back((unsigned __int64)CLASS_STATE::PLAYER_STATE);
+	this->class_state.push_back((unsigned __int64)CLASS_STATE::MONSTER_STATE);
+
+	return true;
+}
+
+void CServerManager::Run()
+{
+	while (1)
+	{
+		SOCKET sock = mListenSock->Accept();
+		if (sock == INVALID_SOCKET)
+		{
+			CError::GetInstance()->err_display("Accept");
+			break;
+		}
+
+		RegisterIOCP(sock, 0);
+
+		WSAOverLapped_EX* wsa_accept = new WSAOverLapped_EX;
+		memset(wsa_accept, 0, sizeof(WSAOverLapped_EX));
+
+		wsa_accept->ptr = (void*)sock;
+		wsa_accept->type = IO_ACCEPT;
+
+		PostQueuedCompletionStatus(hcp, 0, sock, (LPOVERLAPPED)wsa_accept);
+	}
+}
+
+void CServerManager::End()
+{
+	/*Destroy 순서
+	CHAT n PLAYER-> Lobby-> Login-> ClientManager-> DB -> PROTOCOL-> ERROR-> ServerManager
+	*/
+
+	ChatManager::GetInstance()->End();
+	Lobby_Manager::GetInstance()->End();
+	LoginManager::GetInstance()->End();
+	ClientManager::GetInstance()->End();
+	CMySQLDBManager::GetInstance()->End();
+	PlayerManager::GetInstance()->End();
+	MonsterManager::GetInstance()->End();
+
+	WSACleanup();
+	Destory();
+}
+
+int CServerManager::Recv(void* ptr, int len)
+{
+	CClientSection* client = (CClientSection*)ptr;
+	if (client == nullptr)
+	{
+		CError::GetInstance()->err_display("Recv");
+		return true;
+	}
+
+	int result = client->CompleteRecv(len);
+
+	switch (result)
+	{
+	case SOC_ERROR:
+		return SOC_ERROR;
+	case SOC_FALSE:
+		return SOC_FALSE;
+	case SOC_TRUE:
+		break;
+	}
+
+	time_t t = time(NULL);
+	struct tm tm = *localtime(&t);
+	printf("[Time] %d/%d %d:%d:%d\n", tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min, tm.tm_sec);
+
+	unsigned __int64 full_code = client->GetProtocol();
+
+	for (int i = 0; i < class_state.size(); i++)
+	{
+		if (CProtocol::GetInstance()->ProtocolUnpacker(full_code, (unsigned __int64)class_state[i], NULL, NULL))
+		{
+			switch ((CLASS_STATE)class_state[i])
+			{
+			case CLASS_STATE::INIT_STATE:
+				printf("INIT_STATE\n");
+				break;
+			case CLASS_STATE::LOGIN_STATE:
+				printf("LOGIN_STATE\n");
+				client->SetState(client->GetLoginState());
+				break;
+			case CLASS_STATE::CHAT_STATE:
+				printf("CHAT_STATE\n");
+				client->SetState(client->GetChatState());
+				break;
+			case CLASS_STATE::LOBBY_STATE:
+				printf("LOBBY_STATE\n");
+				client->SetState(client->GetLobbyState());
+				break;
+			case CLASS_STATE::PLAYER_STATE:
+				printf("PLAYER_STATE\n");
+				client->SetState(client->GetPlayerState());
+				break;
+
+			case CLASS_STATE::MONSTER_STATE:
+				printf("MONSTER_STATE\n");
+				client->SetState(client->GetMonaterState());
+				break;
+			}
+			//초기화를 init_state로 했기 때문에 여기선 따로 설정하지 않는다. 시작과 동시에 CHAT_STATE 로 가게끔 설정해둠.		
+		}
+	}
+
+	client->GetState()->RecvProcess(client);
+
+	if (!client->Recv())
+	{
+		return SOC_ERROR;
+	}
+
+	return SOC_TRUE;
+}
+
+int CServerManager::Send(void* ptr, int len)
+{
+	CClientSection* client = (CClientSection*)ptr;
+	if (client == nullptr)
+	{
+		CError::GetInstance()->err_display("Send");
+		return true;
+	}
+
+	int result = client->CompleteSend(len);
+
+	switch (result)
+	{
+	case SOC_ERROR:
+		return SOC_ERROR;
+	case SOC_FALSE:
+		return SOC_FALSE;
+	case SOC_TRUE:
+		break;
+	}
+
+	client->GetState()->SendProcess(client);
+	return SOC_TRUE;
+}
+
+void CServerManager::Accept(void* ptr)
+{	
+	printf("Accept\n");
+
+	WSAOverLapped_EX* overlapped = (WSAOverLapped_EX*)ptr;
+	SOCKET sock = (SOCKET)overlapped->ptr;
+	// Add
+	CClientSection* client = ClientManager::GetInstance()->AddClient(sock);
+
+	delete overlapped;
+
+	if (!client->Recv())
+	{
+		return;
+	}
+}
+
+void CServerManager::Disconneted(void* ptr)
+{
+	printf("Disconneted\n");
+
+	// Remove
+
+	// 채팅 방 정보 제거
+	// ChatManager::GetInstance()->Remove((CClientSection*)ptr);
+
+	// 게임 방 정보 제거
+	Lobby_Manager::GetInstance()->Remove((CClientSection*)ptr);
+
+	// 로그인 중 비정상 종료 시 로그아웃 처리
+	LoginManager::GetInstance()->Logout((CClientSection*)ptr);
+
+	// 클라이언트 정보 제거
+	ClientManager::GetInstance()->RemoveClient((CClientSection*)ptr);	
+}
+```  
+  
+### 10. IOCP Manager
+----------------------------------------------------------------------
+  
+위 서버 라이브러리는 IOCP 를 사용하기 때문에 IOCP Manager 클래스를 설계 하였습니다.  
+Server Manager 는 IOCP Manager 를 상속 받아 사용하게 됩니다.  
+만약 IOCP 가 아닌 Multi Thread, Select 등 다른 방식을 사용하는 경우 그 클래스를 설계하고 ServerManager 가 상속 받아 사용하게끔 설계하면 됩니다.  
+  
+#### 헤더
+  
+```  
+#pragma once
+#include "ClientSection.h"
+
+class CIOCPManager
+{
+protected:
+	HANDLE hcp;
+	vector<HANDLE>* hThreadList;
+public:
+	CIOCPManager();
+	~CIOCPManager();
+
+	bool BeginIOCP();
+	void RegisterIOCP(SOCKET sock, int key);
+	static DWORD WINAPI WorkerThread(LPVOID arg);
+	void EndIOCP();
+
+	virtual int Recv(void* ptr, int len) = 0;
+	virtual int Send(void* ptr, int len) = 0;
+	virtual void Disconneted(void* ptr) = 0;
+	virtual void Accept(void* ptr) = 0;
+};
+```  
+  
+#### 구현부  
+  
+```  
+#include "IOCPManager.h"
+
+CIOCPManager::CIOCPManager()
+{
+	hcp = nullptr;
+	hThreadList = nullptr;
+}
+
+CIOCPManager::~CIOCPManager()
+{
+	if (hThreadList != nullptr)
+		delete hThreadList;
+}
+
+bool CIOCPManager::BeginIOCP()
+{
+	hcp = CreateIoCompletionPort(INVALID_HANDLE_VALUE, nullptr, 0, 0);
+	if (hcp == nullptr) return false;
+
+	SYSTEM_INFO sys;
+	GetSystemInfo(&sys);
+
+	hThreadList = new vector<HANDLE>();
+
+	for (int i = 0; i < (int)sys.dwNumberOfProcessors * 2; i++)
+	{
+		hThreadList->push_back(CreateThread(NULL, 0, WorkerThread, this, 0, NULL));
+	}
+}
+
+DWORD WINAPI CIOCPManager::WorkerThread(LPVOID arg)
+{
+	int retval;
+	CIOCPManager* ptr = (CIOCPManager*)arg;
+
+	while (1)
+	{
+		DWORD cbTransferrd;
+		SOCKET sock = NULL;
+		WSAOverLapped_EX* overlapped;
+
+		retval = GetQueuedCompletionStatus(ptr->hcp, &cbTransferrd, (PULONG_PTR)&sock, (LPOVERLAPPED*)&overlapped, INFINITE);
+
+		if (sock == NULL && (retval == 0 || cbTransferrd == 0))
+		{
+			if (retval == 0)
+			{
+				DWORD temp1, temp2;
+				WSAGetOverlappedResult(sock, &overlapped->overlapped, &temp1, false, &temp2);
+				CError::GetInstance()->err_display("WSAGetOverlappedResult");
+			}
+
+			ptr->Disconneted(overlapped->ptr);
+			continue;
+		}
+
+		switch (overlapped->type)
+		{
+		case IO_RECV:
+		{
+			int recv = ptr->Recv(overlapped->ptr, cbTransferrd);
+			switch (recv)
+			{
+			case SOC_ERROR:
+				ptr->Disconneted(overlapped->ptr);
+			case SOC_FALSE:
+				continue;
+			}
+		}
+			break;
+
+		case IO_SEND:
+		{
+			int send = ptr->Send(overlapped->ptr, cbTransferrd);
+			switch (send)
+			{
+			case SOC_ERROR:
+				ptr->Disconneted(overlapped->ptr);
+			case SOC_FALSE:
+				continue;
+			}
+		}
+			break;
+
+		case IO_ACCEPT:
+			ptr->Accept(overlapped);
+			break;
+		}
+	}
+
+	return 0;
+}
+
+void CIOCPManager::RegisterIOCP(SOCKET sock, int key)
+{
+	CreateIoCompletionPort((HANDLE)sock, hcp, key, 0);
+}
+
+void CIOCPManager::EndIOCP()
+{
+	hcp = nullptr;
+	hThreadList->clear();
+}
+```  
+  
+### 11. Client Manager
+------------------------------------------------------------------  
+  
+클라이언트 정보를 관리하는 Manager 클래스 입니다.  
+클라이언트를 추가, 삭제, 검색 하는 기능을 가지고 있고 클라이언트 리스트를 가지고 있습니다.  
+  
+#### 헤더
+  
+```  
+#pragma once
+#include "CriticalSection.h"
+#include "ClientSection.h"
+
+class ClientManager : public CMultiThreadSyns<ClientManager>
+{
+private:
+	DECLARE_SINGLETONE(ClientManager)
+
+	ClientManager();
+	~ClientManager();
+private:
+	list<CClientSection*>* mClient_List;
+	CClientSection* mClient_Data;
+public:
+	void Begin();
+	void End();
+
+	CClientSection* AddClient(SOCKET _sock);
+	void RemoveClient(CClientSection* ptr);
+
+	CClientSection* SearchClientInfo(const char* id);
+	CClientSection* SearchClientData();
+
+	//void SearchClientBegin();
+	//void SearchClientEnd();
+};
+```  
+  
+#### 구현부  
+  
+```  
+#include "ClientManager.h"
+IMPLEMENT_SINGLETON(ClientManager)
+
+ClientManager::ClientManager()
+{
+	mClient_List = nullptr;
+	mClient_Data = nullptr;
+}
+
+ClientManager::~ClientManager()
+{
+
+}
+
+void ClientManager::Begin()
+{
+	mClient_List = new list<CClientSection*>();
+}
+
+void ClientManager::End()
+{
+	if (mClient_List != nullptr) delete mClient_List;
+	if (mClient_Data != nullptr) delete mClient_Data;
+}
+
+CClientSection* ClientManager::AddClient(SOCKET sock)
+{
+	CLock lock;
+
+	CClientSection* client = new CClientSection(sock);
+	mClient_List->push_back(client);
+
+	printf("클라이언트 접속 : IP : %s , PORT : %d\n\n", inet_ntoa(client->GetAddr().sin_addr), ntohs(client->GetAddr().sin_port));
+	return client;
+}
+
+void ClientManager::RemoveClient(CClientSection* ptr)
+{
+	CLock lock;
+
+	printf("클라이언트 종료 : IP : %s , PORT : %d\n\n", inet_ntoa(ptr->GetAddr().sin_addr), ntohs(ptr->GetAddr().sin_port));
+	if (ptr->IsLogin())
+		ptr->Logout();
+	mClient_List->remove(ptr);
+	delete ptr;
+}
+
+CClientSection* ClientManager::SearchClientInfo(const char* id)
+{
+	CLock lock;
+
+	mClient_Data = nullptr;
+	
+	for (list<CClientSection*>::iterator data = mClient_List->begin(); data != mClient_List->end(); data++)
+	{
+		mClient_Data = *data;
+
+		if (!strcmp(mClient_Data->GetUser()->id, id))
+		{
+			break;
+		}
+	}
+
+	return mClient_Data;
+}
+
+CClientSection* ClientManager::SearchClientData()
+{
+	return mClient_Data;
+}
+```  
+  
+### 게임 서버 구조  
+--------------------------------------------------------------------------------------- 
+  
+![4](https://user-images.githubusercontent.com/63215359/102322067-d5045100-3fc1-11eb-8395-cfb80b29fe54.PNG)
   
   
+본 프로젝트의 게임 서버에서 서버는 오로지 클라이언트에게 받은 데이터를 다른 클라이언트에게 다시 송신해주는 역할을 수행합니다.  
+플레이어 캐릭터는 양측이 다 움직이기 때문에 모든 클라이언트가 다른 클라이언트에게 자신의 정보를 알려야 합니다.  
+  
+하지만 몬스터는 모든 클라이언트가 동기화가 되어야 하기 때문에 기준이 되는 클라이언트 한 명만이 다른 클라이언트에게 정보를 알리게 됩니다.  
+이 때 몬스터는 서버에게 데이터를 받은 후에 렌더링이 되어야 하는데 데이터를 받기 전에 렌더링이 된다면 동기화에 문제가 생길 수 있기 때문입니다.  
+다만, 피격에 관해서는 예외적으로 모든 클라이언트가 서버에게 피격 정보를 주어야 하며 몬스터 피격 처리는  
+클라이언트가 아닌 서버에서 처리하며, 클라이언트들에게 피격 계산 후의 몬스터 HP 데이터를 수신하게 됩니다.  
+  
+Player, Monster, Login, Match 등의 Manager 클래스는 이 문서에 기재하지 않았고, Script 를 Commit 하여 따로 기재 하였습니다.
   
   
-  
-  
-  
-  
-  
-### 클라이언트 라이브러리
+## 클라이언트 라이브러리
 -----------------------------------------  
   
-### 플레이어 동기화
+## 플레이어 동기화
 -----------------------------------------
   
-### 서버-클라이언트 보간
+## 서버-클라이언트 보간
 -----------------------------------------
   
-## 클라이언트
+# 클라이언트
 -----------------------------------------
-### 각종 유저 편의 기능
+## 각종 유저 편의 기능
   
 -----------------------------------------
