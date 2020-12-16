@@ -1715,11 +1715,462 @@ CClientSection* ClientManager::SearchClientData()
 다만, 피격에 관해서는 예외적으로 모든 클라이언트가 서버에게 피격 정보를 주어야 하며 몬스터 피격 처리는  
 클라이언트가 아닌 서버에서 처리하며, 클라이언트들에게 피격 계산 후의 몬스터 HP 데이터를 수신하게 됩니다.  
   
-Player, Monster, Login, Match 등의 Manager 클래스는 이 문서에 기재하지 않았고, Script 를 Commit 하여 따로 기재 하였습니다.
+Player, Monster, Login, Match 등의 Manager 클래스는 이 문서에 기재하지 않았고, Script 를 Commit 하여 따로 기재 하였습니다.  
   
   
 ## 클라이언트 라이브러리
 -----------------------------------------  
+  
+Unity 3D 는 C# 을 사용하고 있기 때문에 C# TCP 클라이언트 라이브러리를 설계하게 되었습니다.  
+  
+### 1. TCP Socket
+-------------------------------------------------------------------------------
+  
+클라이언트에서는 IOCP 를 사용하지 않고 TCP Socket 만 사용합니다.  
+Connect, Send, Recv 기능을 담당하고 있으며, Pack, UnPack 을 위한 Buffer 구조체를 재정의 하였습니다.  
+  
+#### 소스
+  
+```  
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+using System;
+using System.Net;
+using System.Net.Sockets;
+
+namespace TCP
+{
+    public class SendBuffer
+    {
+        public byte[] buffer;
+        public int offset;
+        public int size;
+    }
+
+    public class RecvBuffer
+    {
+        public byte[] buffer;
+        public int offset;
+        public int size;
+
+        public RecvBuffer()
+        {
+            buffer = null;
+            offset = 0;
+            size = 0;
+        }
+    }
+    
+    public class TCPSocket : MonoBehaviour
+    {
+        public TcpClient Sock;
+        public NetworkStream Net;
+
+        public bool Connecting(string ip, int port)
+        {
+            try
+            {
+                Sock = new TcpClient(ip, port);
+                Net = Sock.GetStream();
+            }
+            catch (SocketException e)
+            {
+                print("Socket Error : " + e.Message.ToString());
+                return false;
+            }
+            catch (Exception e)
+            {
+                print("ETC Error : " + e.Message.ToString());
+                return false;
+            }
+            return true;
+        }
+
+        public void Send(SendBuffer ptr)
+        {
+            Net.Write(ptr.buffer, 0, ptr.size);
+        }
+
+        public int Recv(RecvBuffer ptr)
+        {
+            return Net.Read(ptr.buffer, ptr.offset, ptr.size);
+        }
+
+        public void Release()
+        {
+            Net.Close();
+            Sock.Close();
+        }
+    }
+}
+```  
+  
+### 2. Packing
+----------------------------------------------------------------------------  
+  
+수신하고자 하는 데이터를 Pack 해주고, 수신 받은 데이터를 UnPack 해주는 기능을 담당하는 클래스 입니다.  
+또한 송신, 수신을 위한 스레드를 생성하고 Queue 를 통해 이를 관리하게 됩니다.  
+  
+#### 소스  
+  
+```  
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+using System;
+using System.Threading;
+using System.Net.Sockets;
+using UnityEngine.Playables;
+
+namespace TCP
+{
+    public class Packing : TCPSocket
+    {        
+        public Queue<SendBuffer> m_SendBuffer;
+        public Queue<RecvBuffer> m_RecvBuffer;
+
+        Thread SendThread;
+        Thread RecvThread;
+
+        public AutoResetEvent m_SendEvent;
+
+        static public object m_lock;
+        public static List<string> ip = new List<string>();
+
+        public void Begin()
+        {
+            //ip.Add("192.168.0.216");
+            //ip.Add("127.0.0.1");
+
+            // 로컬
+            ip.Add("182.172.23.98");
+
+            // AWS -----------------
+            // 서울
+            ip.Add("54.180.123.104");
+
+            // 오하이오 ( 미국 )
+            ip.Add("3.137.204.197");
+
+            // 일본
+            ip.Add("13.112.127.182");
+
+            bool connected = false;
+
+            foreach (var item in ip)
+            {
+                if (Connecting(item, 9050))
+                {
+                    connected = true;
+                    break;
+                }
+            }
+
+            if (!connected)
+                Application.Quit();
+
+            //if (!Connecting(ip, 9050))
+            //{
+
+            //    if (!Connecting(ip, 9050))
+            //        Application.Quit();
+            //}
+
+            m_lock = new object();
+            m_SendEvent = new AutoResetEvent(false);
+
+            m_SendBuffer = new Queue<SendBuffer>();
+             m_RecvBuffer= new Queue<RecvBuffer>();
+
+            SendThread = new Thread(new ThreadStart(SendProcess));
+            RecvThread = new Thread(new ThreadStart(RecvProcess));
+
+            SendThread.Start();
+            RecvThread.Start();
+        }
+
+        public void End()
+        {
+            m_SendBuffer.Clear();
+            m_RecvBuffer.Clear();
+
+            SendThread.Abort();
+            RecvThread.Abort();
+
+            Release();
+        }
+
+        void SendProcess()
+        {
+            while (true)
+            {
+                try
+                {
+                    if (m_SendBuffer.Count == 0)
+                        m_SendEvent.WaitOne();
+
+                    lock (m_lock)
+                        Send(m_SendBuffer.Dequeue());
+                }
+                catch
+                {
+                    //print("Send Error");
+                    continue;
+                }
+            }
+        }
+
+        void RecvProcess()
+        {
+            while (true)
+            {
+                try
+                {
+                    RecvBuffer data = new RecvBuffer();
+
+                    data.buffer = new byte[4];
+                    data.size = sizeof(int);
+                    data.offset = 0;
+
+                    int retval = Recv(data);
+                    data.size = BitConverter.ToInt32(data.buffer, 0);
+                    data.buffer = new byte[data.size];
+
+                    while (data.size > 0)
+                    {
+                        retval = Recv(data);
+                        if (retval == 0)
+                            break;
+
+                        data.size -= retval;
+                        data.offset += retval;
+                    }
+
+                    data.size = data.offset;
+
+                    lock (m_lock)
+                        m_RecvBuffer.Enqueue(data);
+                }
+                catch
+                {
+                    //print("Recv Error");
+                    continue;
+                }
+            }
+
+        }
+
+        public void PackingData(UInt64 Protocol)
+        {
+            lock (m_lock)
+            {
+                SendBuffer data = new SendBuffer();
+                data.buffer = new byte[4096];
+                data.size = 0;
+
+                data.offset = sizeof(int);
+
+                Buffer.BlockCopy(BitConverter.GetBytes(Protocol), 0, data.buffer, data.offset, sizeof(UInt64));
+                data.size += sizeof(UInt64);
+
+                Buffer.BlockCopy(BitConverter.GetBytes(data.size), 0, data.buffer, 0, sizeof(int));
+                data.size += sizeof(int);
+
+                m_SendBuffer.Enqueue(data);
+                m_SendEvent.Set();
+            }
+        }
+
+        public void PackingData(UInt64 Protocol, byte[] buffer)
+        {
+            lock (m_lock)
+            {
+
+                SendBuffer data = new SendBuffer();
+                data.buffer = new byte[4096];
+                data.size = 0;
+
+                data.offset = sizeof(int);
+
+                Buffer.BlockCopy(BitConverter.GetBytes(Protocol), 0, data.buffer, data.offset, sizeof(UInt64));
+                data.offset += sizeof(UInt64);
+                data.size += sizeof(UInt64);
+
+                if (buffer.Length != 0)
+                {
+                    Buffer.BlockCopy(buffer, 0, data.buffer, data.offset, buffer.Length);
+                    data.size += buffer.Length;
+                }
+
+                Buffer.BlockCopy(BitConverter.GetBytes(data.size), 0, data.buffer, 0, sizeof(int));
+                data.size += sizeof(int);
+
+                m_SendBuffer.Enqueue(data);
+                m_SendEvent.Set();
+            }
+        }
+
+
+        public UInt64 GetProtocol()
+        {
+            lock (m_lock)
+            {
+                try
+                {
+                    return BitConverter.ToUInt64(m_RecvBuffer.Peek().buffer, 0);
+                }
+                catch
+                {
+                    return 0;
+                }
+            }
+        }
+
+        public RecvBuffer UnPackingData()
+        {
+            lock (m_lock)
+            {
+                try
+                {
+                    return m_RecvBuffer.Dequeue();
+                }
+                catch
+                {
+                    return new RecvBuffer();
+                }
+            }
+        }
+    }
+}
+```  
+  
+### 3. Client  
+----------------------------------------------------------------------------  
+  
+State 패턴을 사용하여 지정된 기능만 사용 할 수 있게 하는 기능을 담당하고 있습니다.  
+또한 싱글톤으로 접근이 간단하고, 한 클라이언트에 한 개 이상의 Client 객체가 있는 경우를 방지하고 있습니다.  
+  
+#### 소스
+  
+```  
+using System.Collections;
+using System.Collections.Generic;
+using UnityEngine;
+
+using System;
+
+namespace TCP
+{
+    public class TCPClient : Packing
+    {
+        public static TCPClient Instance;
+
+        State m_State;
+
+        [HideInInspector] public static IntroState m_Intro;
+        [HideInInspector] public static LoginState m_Login;
+        [HideInInspector] public static MatchState m_Match;
+        [HideInInspector] public static Player_State m_Player;
+        [HideInInspector] public static MonsterState m_Monster;
+
+        // Start is called before the first frame update
+        void Awake()
+        {
+            DontDestroyOnLoad(this);
+
+            if (Instance != null)
+            {
+                GameObject obj = GameObject.Find("ServerManager");
+                DestroyImmediate(obj);
+            }
+            else
+            {
+                Instance = this;
+                gameObject.name = "ServerManager_Orizin";
+                Begin();
+
+                m_Intro = new IntroState();
+                m_Login = new LoginState();
+                m_Match = new MatchState();
+                m_Player = new Player_State();
+                m_Monster = new MonsterState();
+
+                m_Intro.Intro_Message();
+            }
+        }
+
+        // Update is called once per frame
+        void Update()
+        {
+            if (m_RecvBuffer.Count != 0)
+            {
+                var Class_State = GetProtocol() & (UInt64)FULL_CODE.MAIN;
+
+                switch((CLASS_STATE)Class_State)
+                {
+                    case CLASS_STATE.INIT_STATE:
+                        SetState(m_Intro);
+                        break;
+
+                    case CLASS_STATE.LOGIN_STATE:
+                        SetState(m_Login);
+                        break;
+
+                    case CLASS_STATE.LOBBY_STATE:
+                        SetState(m_Match);
+                        break;
+
+                    case CLASS_STATE.PLAYER_STATE:
+                        SetState(m_Player);
+                        break;
+
+                    case CLASS_STATE.MONSTER_STATE:
+                        SetState(m_Monster);
+                        break;
+                }
+
+                m_State.RecvProcess();
+            }
+        }
+
+        void SetState(State _state)
+        {
+            m_State = _state;
+        }
+
+        private void OnApplicationQuit()
+        {         
+            End();
+        }
+    }
+}
+```  
+  
+### 4. State
+-----------------------------------------------------------------  
+  
+상태 패턴을 사용하여 사용 할 기능만을 사용할 수 있습니다.
+  
+#### 소스  
+  
+```  
+public abstract class State : TCPClient
+{
+    public abstract void RecvProcess();
+    public abstract void SendProcess();
+}
+```  
+  
+  
+  
+  
+  
+  
+  
+  
   
 ## 플레이어 동기화
 -----------------------------------------
