@@ -141,7 +141,8 @@ bool CProtocol::ProtocolUnpacker(unsigned __int64 _full_code, unsigned __int64 m
   
 DB 는 MYSQL 을 사용하여 관리하도록 구현 하였고, 본 게임에서는 유저의 계정 정보 정도만 관리하고 있습니다.  
 구현된 기능은 저장하기, 불러오기, 데이터 입력, 쿼리 선택, 데이터베이스 선택 이 있으며, 이후에도 필요 시 추가 할 예정입니다.  
-  
+아직 Update, Join, Group by, Index 등의 기능들은 적용되지 않았습니다.      
+   
 #### 헤더
   
 ```  
